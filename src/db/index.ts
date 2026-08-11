@@ -1,38 +1,25 @@
 import initSqlJs, { Database } from 'sql.js';
-import fs from 'fs';
-import path from 'path';
-
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'beritaanda.sqlite');
 
 let dbInstance: Database | null = null;
 
 export async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance;
 
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
   const SQL = await initSqlJs();
-
-  if (fs.existsSync(DB_FILE)) {
-    const filebuffer = fs.readFileSync(DB_FILE);
-    dbInstance = new SQL.Database(filebuffer);
-  } else {
-    dbInstance = new SQL.Database();
-    saveDb();
-  }
-
+  
+  // Berjalan murni di memori (Serverless/Edge compatible)
+  dbInstance = new SQL.Database();
+  
   initTables(dbInstance);
   return dbInstance;
 }
 
 export function saveDb() {
+  // Dalam lingkungan serverless tanpa D1/Volume persisten, 
+  // fungsi saveDb lokal ke file system dinonaktifkan.
   if (!dbInstance) return;
-  const data = dbInstance.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_FILE, buffer);
+  // const data = dbInstance.export();
+  // Di sistem produksi Cloudflare, gunakan Cloudflare D1 untuk persistensi.
 }
 
 function initTables(db: Database) {
@@ -176,7 +163,6 @@ function initTables(db: Database) {
   saveDb();
 }
 
-// Helper database functions
 export async function queryAll<T = any>(sql: string, params: any[] = []): Promise<T[]> {
   const db = await getDb();
   const stmt = db.prepare(sql);
