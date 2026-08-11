@@ -1,5 +1,5 @@
 import { Context, Next } from 'hono';
-import jwt from 'jsonwebtoken';
+import { sign, verify } from 'hono/jwt';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'beritaanda-jwt-hs256-super-secret-key-2026';
 
@@ -9,6 +9,7 @@ export interface AuthUserPayload {
   email: string;
   role: 'admin' | 'editor' | 'member';
   avatar?: string;
+  exp?: number;
 }
 
 export type HonoEnv = {
@@ -18,13 +19,14 @@ export type HonoEnv = {
   };
 };
 
-export function generateToken(payload: AuthUserPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d', algorithm: 'HS256' });
+export async function generateToken(payload: AuthUserPayload): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60); // 7 Hari
+  return await sign({ ...payload, exp }, JWT_SECRET, 'HS256');
 }
 
-export function verifyToken(token: string): AuthUserPayload | null {
+export async function verifyToken(token: string): Promise<AuthUserPayload | null> {
   try {
-    return jwt.verify(token, JWT_SECRET) as AuthUserPayload;
+    return await verify(token, JWT_SECRET, 'HS256') as AuthUserPayload;
   } catch (err) {
     return null;
   }
@@ -35,7 +37,6 @@ export async function jwtAuthMiddleware(c: Context<HonoEnv>, next: Next) {
   let token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
 
   if (!token) {
-    // Check cookie
     const cookieHeader = c.req.header('Cookie');
     if (cookieHeader) {
       const match = cookieHeader.match(/auth_token=([^;]+)/);
@@ -47,7 +48,7 @@ export async function jwtAuthMiddleware(c: Context<HonoEnv>, next: Next) {
     return c.json({ success: false, message: 'Akses ditolak: Token JWT HS256 tidak ditemukan' }, 401);
   }
 
-  const payload = verifyToken(token);
+  const payload = await verifyToken(token);
   if (!payload) {
     return c.json({ success: false, message: 'Akses ditolak: Token JWT tidak valid atau kadaluarsa' }, 401);
   }
