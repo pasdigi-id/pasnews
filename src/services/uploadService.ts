@@ -1,15 +1,6 @@
-import fs from 'fs';
-import path from 'path';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { execute } from '../db/index.js';
 
-const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads');
-
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
-
-// R2 Environment Configuration
 const r2AccountId = process.env.R2_ACCOUNT_ID;
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
@@ -43,51 +34,48 @@ export async function processImageUpload(file: File): Promise<{
   url: string;
   filename: string;
   id: number;
-  storage_type: 'cloudflare_r2' | 'r2_compatible_local';
+  storage_type: 'cloudflare_r2';
 }> {
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const ext = path.extname(file.name) || '.jpg';
-  const cleanName = path.basename(file.name, ext).replace(/[^a-zA-Z0-9]/g, '_');
+  const buffer = new Uint8Array(await file.arrayBuffer());
+  const originalName = file.name;
+  
+  const lastDotIndex = originalName.lastIndexOf('.');
+  const ext = lastDotIndex !== -1 ? originalName.substring(lastDotIndex) : '.jpg';
+  const rawName = lastDotIndex !== -1 ? originalName.substring(0, lastDotIndex) : originalName;
+  
+  const cleanName = rawName.replace(/[^a-zA-Z0-9]/g, '_');
   const filename = `${cleanName}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}${ext}`;
   const size = buffer.length;
   const mimeType = file.type || 'image/jpeg';
 
   const client = getR2Client();
   let publicUrl = '';
-  let storageType: 'cloudflare_r2' | 'r2_compatible_local' = 'r2_compatible_local';
+  const storageType: 'cloudflare_r2' = 'cloudflare_r2';
 
-  if (client && r2BucketName) {
-    try {
-      // Put Object into Cloudflare R2 Bucket
-      await client.send(
-        new PutObjectCommand({
-          Bucket: r2BucketName,
-          Key: `uploads/${filename}`,
-          Body: buffer,
-          ContentType: mimeType
-        })
-      );
+  if (!client || !r2BucketName) {
+    throw new Error('Konfigurasi R2 tidak valid. Penyimpanan lokal dinonaktifkan di lingkungan Edge.');
+  }
 
-      storageType = 'cloudflare_r2';
-      if (r2PublicDomain) {
-        const domain = r2PublicDomain.replace(/\/$/, '');
-        publicUrl = domain.startsWith('http') ? `${domain}/uploads/${filename}` : `https://${domain}/uploads/${filename}`;
-      } else {
-        publicUrl = `https://${r2BucketName}.${r2AccountId}.r2.cloudflarestorage.com/uploads/${filename}`;
-      }
-    } catch (r2Err) {
-      console.warn('Gagal upload langsung ke R2 Cloudflare Bucket, fallback ke local R2 storage endpoint:', r2Err);
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: r2BucketName,
+        Key: `uploads/${filename}`,
+        Body: buffer,
+        ContentType: mimeType
+      })
+    );
+
+    if (r2PublicDomain) {
+      const domain = r2PublicDomain.replace(/\/$/, '');
+      publicUrl = domain.startsWith('http') ? `${domain}/uploads/${filename}` : `https://${domain}/uploads/${filename}`;
+    } else {
+      publicUrl = `https://${r2BucketName}.${r2AccountId}.r2.cloudflarestorage.com/uploads/${filename}`;
     }
+  } catch (r2Err) {
+    throw new Error(`Gagal upload ke R2 Cloudflare Bucket: ${r2Err}`);
   }
 
-  // Fallback / Local Storage
-  if (!publicUrl) {
-    const filePath = path.join(UPLOAD_DIR, filename);
-    fs.writeFileSync(filePath, buffer);
-    publicUrl = `/uploads/${filename}`;
-  }
-
-  // Save to Database Media Log
   const { lastInsertId } = await execute(
     `INSERT INTO media (filename, original_name, mime_type, size, url) 
      VALUES (?, ?, ?, ?, ?)`,
