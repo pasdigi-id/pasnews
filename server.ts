@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { serveStatic } from 'hono/serve-static';
 
 import { seedDatabase } from './src/db/seed.js';
 import { authRouter } from './src/routes/auth.js';
@@ -17,14 +16,19 @@ import { adsRouter } from './src/routes/ads.js';
 import { usersRouter } from './src/routes/users.js';
 import { feedsRouter } from './src/routes/feeds.js';
 
-// Inisialisasi Hono API Framework
-const app = new Hono();
+// Definisikan Bindings agar TypeScript/Hono mengenali aset bawaan Cloudflare Pages
+type Bindings = {
+  ASSETS: Fetcher;
+};
+
+// Inisialisasi Hono API Framework dengan tipe Bindings
+const app = new Hono<{ Bindings: Bindings }>();
 
 // Eksekusi seed database di luar request cycle agar siap saat worker menyala
 seedDatabase().catch(console.error);
 
 // Grouping semua routes API ke dalam prefix /api agar frontend bisa mengaksesnya
-const apiRouter = new Hono();
+const apiRouter = new Hono<{ Bindings: Bindings }>();
 
 apiRouter.route('/auth', authRouter);
 apiRouter.route('/posts', postsRouter);
@@ -37,31 +41,48 @@ apiRouter.route('/menus', menusRouter);
 apiRouter.route('/widgets', widgetsRouter);
 apiRouter.route('/ads', adsRouter);
 apiRouter.route('/users', usersRouter);
-apiRouter.route('/v1', externalRouter); // Third-Party API Endpoint (x-api-key)
+apiRouter.route('/v1', externalRouter); 
 apiRouter.route('/cache', cacheRouter);
 apiRouter.route('/feeds', feedsRouter);
 
 // Mount API Router ke path /api
 app.route('/api', apiRouter);
 
-// Mount feeds juga di root (menyesuaikan struktur asli Anda)
+// Mount feeds (HANYA di /feeds, jangan di root '/')
 app.route('/feeds', feedsRouter);
-app.route('/', feedsRouter);
 
 // Health check endpoint
-app.get('/api/health', (c) => c.json({ status: 'ok', framework: 'HonoJS', database: 'SQLite (via sql.js)' }));
+app.get('/api/health', (c) => c.json({ status: 'ok', framework: 'HonoJS', database: 'SQLite (via sql.js in-memory)' }));
 
 // Penanganan Direct XML feed dan Sitemap
 const feedPaths = ['/sitemap.xml', '/news-sitemap.xml', '/rss.xml', '/feed', '/atom.xml', '/feed/google-news.xml'];
 feedPaths.forEach((path) => {
   app.get(path, async (c) => {
-    // Di Hono murni, logika feed bisa langsung diproses di dalam feedsRouter. 
-    // Rute ini sebagai penangkap jika dipanggil di root.
-    const response = await feedsRouter.fetch(c.req.raw);
-    return response;
+    return await feedsRouter.fetch(c.req.raw);
   });
 });
 
-// WAJIB UNTUK CLOUDFLARE PAGES: 
-// Mengekspor app default agar Cloudflare mendeteksi fungsi ini (menjadi _worker.js)
+// 🌟 SOLUSI UTAMA (FALLBACK FRONTEND) 🌟
+// Menangani semua request yang BUKAN API untuk merender UI React (Frontend)
+app.notFound(async (c) => {
+  try {
+    // Cloudflare Pages otomatis menyuntikkan ASSETS untuk mengambil file dist/ (UI Anda)
+    const response = await c.env.ASSETS.fetch(c.req.raw);
+    
+    // Jika file statis tidak ditemukan (misal: user merefresh halaman /dashboard),
+    // kembalikan index.html agar React Router bisa menangani rutenya (SPA behavior).
+    if (response.status === 404) {
+      const url = new URL(c.req.url);
+      url.pathname = '/'; // Arahkan kembali ke root index.html
+      const fallbackReq = new Request(url.toString(), c.req.raw);
+      return await c.env.ASSETS.fetch(fallbackReq);
+    }
+    
+    return response;
+  } catch (e) {
+    return c.text('Frontend belum di-build atau ASSETS tidak ditemukan di environment ini.', 500);
+  }
+});
+
+// Mengekspor app default agar Cloudflare mendeteksi fungsi ini
 export default app;
