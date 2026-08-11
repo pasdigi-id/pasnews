@@ -26,14 +26,15 @@ authRouter.post('/register', async (c) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const defaultAvatar = `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`;
 
+    // PERBAIKAN: Menggunakan 'full_name' sesuai dengan schema.sql dan menghapus kolom 'avatar' dari kueri INSERT
     const { lastInsertId } = await execute(
-      'INSERT INTO users (name, email, password_hash, role, avatar) VALUES (?, ?, ?, ?, ?)',
-      [name, email, passwordHash, 'member', defaultAvatar]
+      'INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+      [name, email, passwordHash, 'member']
     );
 
     const tokenPayload: AuthUserPayload = {
       id: lastInsertId,
-      name,
+      name: name,
       email,
       role: 'member'
     };
@@ -46,14 +47,14 @@ authRouter.post('/register', async (c) => {
       token,
       user: {
         id: lastInsertId,
-        name,
+        name: name,
         email,
         role: 'member',
-        avatar: defaultAvatar
+        avatar: defaultAvatar // Injeksi avatar default untuk kebutuhan frontend
       }
     });
   } catch (err: any) {
-    return c.json({ success: false, message: err.message }, 500);
+    return c.json({ success: false, message: err.message || 'Terjadi kesalahan pada server saat registrasi' }, 500);
   }
 });
 
@@ -74,10 +75,12 @@ authRouter.post('/login', async (c) => {
     if (!isValidPassword) {
       return c.json({ success: false, message: 'Email atau password salah' }, 401);
     }
+    
+    const defaultAvatar = `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`;
 
     const tokenPayload: AuthUserPayload = {
       id: user.id,
-      name: user.name,
+      name: user.full_name, // PERBAIKAN: Mapping full_name dari database ke property name di token
       email: user.email,
       role: user.role as 'admin' | 'editor' | 'member'
     };
@@ -90,19 +93,40 @@ authRouter.post('/login', async (c) => {
       token,
       user: {
         id: user.id,
-        name: user.name,
+        name: user.full_name, // PERBAIKAN: Mapping full_name
         email: user.email,
         role: user.role,
-        avatar: user.avatar
+        avatar: defaultAvatar // Injeksi avatar default
       }
     });
   } catch (err: any) {
-    return c.json({ success: false, message: err.message }, 500);
+    return c.json({ success: false, message: err.message || 'Terjadi kesalahan pada server saat login' }, 500);
   }
 });
 
 authRouter.get('/me', jwtAuthMiddleware, async (c) => {
-  const user = c.get('user');
-  const userRecord = await queryOne<any>('SELECT id, name, email, role, avatar FROM users WHERE id = ?', [user.id]);
-  return c.json({ success: true, user: userRecord });
+  try {
+    const user = c.get('user');
+    // PERBAIKAN: Menggunakan 'full_name' bukan 'name' dan menghapus 'avatar'
+    const userRecord = await queryOne<any>('SELECT id, full_name, email, role FROM users WHERE id = ?', [user.id]);
+    
+    if (!userRecord) {
+      return c.json({ success: false, message: 'User tidak ditemukan' }, 404);
+    }
+
+    const defaultAvatar = `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`;
+
+    return c.json({ 
+      success: true, 
+      user: {
+        id: userRecord.id,
+        name: userRecord.full_name, // PERBAIKAN: Mapping full_name ke name
+        email: userRecord.email,
+        role: userRecord.role,
+        avatar: defaultAvatar // Injeksi avatar default
+      }
+    });
+  } catch (err: any) {
+    return c.json({ success: false, message: err.message || 'Terjadi kesalahan saat mengambil data user' }, 500);
+  }
 });
